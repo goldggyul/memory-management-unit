@@ -1,5 +1,3 @@
-#include <stdio.h>
-#include <stdlib.h>
 #define PAGE_SIZE 4
 
 // physical memory와 swap space의 주소값, 한 칸 당 페이지 하나, 페이지는 1byte가 4개
@@ -12,7 +10,7 @@ int ku_mmu_psize = 10;
 // 현재까지 생성된 pid들 저장
 char *ku_mmu_pids;
 // 각 pid별 pdbr 저장
-char **ku_mmu_pdbrs;
+char *ku_mmu_pdbrs;
 
 // PFN, Swap Space Offset Mask
 static char PFN_MASK=0xFC;
@@ -71,6 +69,7 @@ void ku_mmu_print(char *qname, ku_mmu_queue *q)
     // int size;  // queue의 크기
     // int count; // 들어가있는 원소 개수
     // int *base; // 저장 공간 배열 주소
+
     printf("\n===== %15s =====\n", qname);
     printf("\tfront:%d\n", q->front);
     printf("\t back:%d\n", q->back);
@@ -79,7 +78,7 @@ void ku_mmu_print(char *qname, ku_mmu_queue *q)
     int i=q->front;
     int cnt=0;
     while(cnt<q->count){
-        printf("%d ", (q->base)[i]);
+        printf("%#4x ", ((unsigned char*)q->base)[i]);
         i++;
         if(i==q->size)
             i=0;
@@ -91,7 +90,7 @@ void ku_mmu_print(char *qname, ku_mmu_queue *q)
 void ku_mmu_test(char *space, unsigned int size){
     printf("===========================\n");
     for(int i=0;i<size;i++){
-        printf("%#x ", (unsigned char)*(space+i));
+        printf("%#4x ", (unsigned char)*(space+i));
         if(i==0||i%8==0)
             printf("\n");
     }
@@ -133,7 +132,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     // pid를 저장할 배열 할당
     ku_mmu_pids = malloc(sizeof(char) * ku_mmu_psize);
     // pdbr을 저장할 배열 할당
-    ku_mmu_pdbrs = malloc(sizeof(char *) * ku_mmu_psize);
+    ku_mmu_pdbrs = malloc(sizeof(char ) * ku_mmu_psize);
 
     // free list -> free인 index 저장됨
     ku_mmu_pfree.size = (pmem_size-1) / 4;
@@ -223,7 +222,7 @@ char ku_mmu_get_page_pfn()
     return -1;
 }
 
-int ku_run_proc(char pid, char *ku_cr3)
+int ku_run_proc(char pid, void **ku_cr3)
 {
     // pid 생성 여부 확인
     for (int i = 0; i < ku_mmu_pcount; i++)
@@ -232,7 +231,7 @@ int ku_run_proc(char pid, char *ku_cr3)
         {
             // 이미 실행됐던 프로세스
             printf("ku_os: Run process (pid:%hd)\n", pid);
-            ku_cr3 = ku_mmu_pdbrs[i];
+            *ku_cr3 = &ku_mmu_pdbrs[i];
             return 0;
         }
     }
@@ -253,8 +252,8 @@ int ku_run_proc(char pid, char *ku_cr3)
         printf("ku_os: Fail to run new process (pid:%hd)\n", pid);
         return -1;
     }
-    ku_mmu_pdbrs[ku_mmu_pcount] = &(ku_mmu_pmem[pd_pfn]);
-    ku_cr3 = ku_mmu_pdbrs[ku_mmu_pcount];
+    ku_mmu_pdbrs[ku_mmu_pcount] =pd_pfn;
+    *ku_cr3 = &ku_mmu_pdbrs[ku_mmu_pcount];
     // 0번에 page middle directory 생성, pde update
     char pmd_pfn = ku_mmu_get_page_pfn();
     if (pmd_pfn == -1)
@@ -281,7 +280,7 @@ int ku_run_proc(char pid, char *ku_cr3)
     ku_mmu_pmem[pt_pfn] = (pg_pfn << 2) + 1;
     printf("\nku_os: New Process (pid:%hd)\n", pid);
     printf("ku_os: va[0] occupied by OS\n");
-    printf("pid:%d / pdbr[%p] pd:%#x -> pmd:%#x -> pt:%#x -> page:%#x\n", pid, ku_mmu_pdbrs[ku_mmu_pcount], pd_pfn, pmd_pfn, pt_pfn, pg_pfn);
+    printf("pid:%d / pdbr[%#x] pd:%#x -> pmd:%#x -> pt:%#x -> page:%#x\n", pid, ku_mmu_pdbrs[ku_mmu_pcount], pd_pfn, pmd_pfn, pt_pfn, pg_pfn);
     // PCB 업뎃 (0번 : pid, 1번 : pd의 pfn)
     ku_mmu_pmem[pg_pfn] = pid;
     ku_mmu_pmem[pg_pfn + 1] = pd_pfn;
@@ -295,7 +294,7 @@ int ku_run_proc(char pid, char *ku_cr3)
         ku_mmu_psize *= 2;
         // 안전하게 재할당하기 위하여 값 확인 필요
         char *temp_pids = realloc(ku_mmu_pids, sizeof(char) * ku_mmu_psize);
-        char **temp_pdbrs = realloc(ku_mmu_pdbrs, sizeof(char *) * ku_mmu_psize);
+        char *temp_pdbrs = realloc(ku_mmu_pdbrs, sizeof(char ) * ku_mmu_psize);
         if (temp_pids == NULL || temp_pdbrs == NULL)
         {
             printf("ku_os: Realloc error\n");
@@ -326,14 +325,14 @@ int ku_page_fault(char pid, char va)
         return -1;
     }
     // process의 pdbr
-    char *pdbr = ku_mmu_pdbrs[index];
+    char pdbr = ku_mmu_pdbrs[index];
     // 각각 pd, pmd, pt offset
     char pd_offset = (unsigned char)(va & 0xC0) >> 6;
     char pmd_offset = (va & 0x30) >> 4;
     char pt_offset = (va & 0x0C)>>2;
-    printf("pid[%hd] pdbr[%p]/ pd offset:%d, pmd offset:%d, pt offset:%d\n",pid, pdbr, pd_offset, pmd_offset, pt_offset);
+    printf("pid[%hd] pdbr[%#x]/ pd offset:%d, pmd offset:%d, pt offset:%d\n",pid, pdbr, pd_offset, pmd_offset, pt_offset);
 
-    char pde = *(pdbr + pd_offset);
+    char pde = ku_mmu_pmem[pdbr + pd_offset];
     printf("pde: %#x -> ", (unsigned char)pde);
     // pmd는 swap out 안되므로, swap out은 안 되어있음
     if (pde == 0)
@@ -343,7 +342,7 @@ int ku_page_fault(char pid, char va)
             return -1;
         pde = (pmd_pfn << 2) + 1;
         printf("new pde: %#x -> ", (unsigned char)pde);
-        *(pdbr+pd_offset)=pde;
+        *(ku_mmu_pmem+pdbr+pd_offset)=pde;
     }
     char pmd_pfn = (unsigned char)(pde&PFN_MASK) >> 2;
     printf("pmd: %#x -> ", pmd_pfn);
@@ -397,32 +396,5 @@ int ku_page_fault(char pid, char va)
     ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
     ku_mmu_print("swap space free list ", &ku_mmu_sfree);
 
-    return 0;
-}
-
-int main(int argc, char *argv[])
-{
-    unsigned int pmem_size, swap_size;
-    void *ku_cr3;
-
-    pmem_size = strtol(argv[1], NULL, 10);
-    swap_size = strtol(argv[2], NULL, 10);
-
-    ku_mmu_pmem = ku_mmu_init(pmem_size, swap_size);
-
-    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
-    int r = ku_run_proc(1, &ku_cr3);
-    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
-    if (r == -1)
-        printf("Run Process Error!\n");
-    r = ku_run_proc(2, &ku_cr3);
-    printf("\n>>>>>>>>>>>ku_cr3>>>>>>>>>>>\n%#x\n>>>>>>>>>>>>>>>>>>>\n", *ku_cr3);
-    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
-    r = ku_page_fault(1, 0x6A); // 01 10 10 10
-    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
-    if (r == -1)
-        printf("Page Fault Error!\n");
-    r = ku_page_fault(1, 0x6E); // 01 10 11 10
-    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
     return 0;
 }
