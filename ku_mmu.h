@@ -7,10 +7,8 @@ unsigned int ku_mmu_pmem_size, ku_mmu_swap_size;
 int ku_mmu_pcount = 0;
 // pid 저장 배열의 현재 최대 크기, realloc 위함
 int ku_mmu_psize = 10;
-// 현재까지 생성된 pid들 저장
-char *ku_mmu_pids;
-// 각 pid별 pdbr 저장
-char **ku_mmu_pdbrs;
+// pcb가 저장되어 있는 pfn
+char *ku_mmu_pcb_pfns;
 
 // PFN, Swap Space Offset Mask
 const char PFN_MASK=0xFC;
@@ -24,6 +22,12 @@ typedef struct queue
     int count; // 들어가있는 원소 개수
     char *base; // 저장 공간 배열 주소
 } queue;
+
+typedef struct PCB
+{
+    char pid;
+    char pd_pfn;
+} PCB;
 
 // Free list
 queue ku_mmu_pfree = {0, 0, 0, 0, NULL};
@@ -72,7 +76,6 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     // 1바이트 만큼씩 할당하고 모두 0으로 초기화
     ku_mmu_pmem = calloc(pmem_size, 1);
     ku_mmu_swap = calloc(swap_size, 1);
-    //printf("memory base address: %p, swap base address: %p\n",ku_mmu_pmem,ku_mmu_swap);
 
     // 사실상 쓸 수 있는 공간
     // 페이지 크기가 4바이트이므로, 4로 나눈 나머지는 쓸 수 없다.
@@ -84,9 +87,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     ku_mmu_pte_orders.base = malloc(ku_mmu_pte_orders.size);
 
     // pid를 저장할 배열 할당
-    ku_mmu_pids = malloc(sizeof(char) * ku_mmu_psize);
-    // pdbr을 저장할 배열 할당
-    ku_mmu_pdbrs = malloc(sizeof(char*) * ku_mmu_psize);
+    ku_mmu_pcb_pfns = malloc(sizeof(char) * ku_mmu_psize);
 
     // free list -> free인 index 저장됨
     ku_mmu_pfree.size = pmem_size / 4;
@@ -99,9 +100,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     {
         int r = push(&ku_mmu_pfree, i);
         if (r == -1)
-        {
             return NULL;
-        }
     }
 
     // swap space의 0번 페이지는 쓰이지 않음
@@ -109,9 +108,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     {
         int r = push(&ku_mmu_sfree, i);
         if (r == -1)
-        {
             return NULL;
-        }
     }
     return ku_mmu_pmem;
 }
@@ -123,21 +120,15 @@ char get_pfn()
         // swap out 필요
         // swap 불가능
         if (ku_mmu_sfree.count == 0)
-        {
             return -1;
-        }
         // 메모리에서 swap 할 수 있는 것의 개수
         if (ku_mmu_pte_orders.count == 0)
-        {
             return -1;
-        }
         // swap 가능 -> Page replacement policy: FIFO
         char pte_offset = pop(&ku_mmu_pte_orders);
         char swap_offset = pop(&ku_mmu_sfree);
         if (pte_offset == -1 || swap_offset == -1)
-        {
             return -1;
-        }
         // PTE에 저장되어 있는 page의 PFN
         char pfn = ((unsigned char)(*(ku_mmu_pmem + pte_offset)&PFN_MASK) >> 2);
 
@@ -155,9 +146,7 @@ char get_pfn()
     {
         char pfn = pop(&ku_mmu_pfree);
         if (pfn == -1)
-        {
             return -1;
-        }
         return pfn;
     }
     return -1;
@@ -168,10 +157,11 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
     // pid 생성 여부 확인
     for (int i = 0; i < ku_mmu_pcount; i++)
     {
-        if (pid == ku_mmu_pids[i])
+        PCB *cur_pcb=ku_mmu_pmem+ku_mmu_pcb_pfns[i]*PAGE_SIZE;
+        if (pid == cur_pcb->pid)
         {
             // 이미 실행됐던 프로세스
-            *ku_cr3 = ku_mmu_pdbrs[i];
+            *ku_cr3 = ku_mmu_pmem+cur_pcb->pd_pfn*PAGE_SIZE;
             return 0;
         }
     }
@@ -181,43 +171,36 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
     // PCB는 각각 char pid, pd의 PFN 정보를 갖고 있다.
     // 따라서 기본적으로 페이지 4개를 할당받아야함
 
-    // 새로운 process 생성, pid와 pdbr 배열에 넣어줌
-    // 0번에 PCB 저장
-    ku_mmu_pids[ku_mmu_pcount] = pid;
-
     // page directory 생성
     char pd_pfn = get_pfn();
     if (pd_pfn == -1)
-    {
         return -1;
-    }
-    ku_mmu_pdbrs[ku_mmu_pcount] =ku_mmu_pmem+pd_pfn*PAGE_SIZE;
-    *ku_cr3 = ku_mmu_pdbrs[ku_mmu_pcount];
+    *ku_cr3 = ku_mmu_pmem+pd_pfn*PAGE_SIZE;
+
     // 0번에 page middle directory 생성, pde update
     char pmd_pfn = get_pfn();
     if (pmd_pfn == -1)
-    {
         return -1;
-    }
     ku_mmu_pmem[pd_pfn*PAGE_SIZE] = (pmd_pfn << 2) + 1;
+
     // 0번에 page table 생성, pmde update
     char pt_pfn = get_pfn();
     if (pt_pfn == -1)
-    {
         return -1;
-    }
     ku_mmu_pmem[pmd_pfn*PAGE_SIZE] = (pt_pfn << 2) + 1;
+
     // 0번에 page -> PCB 저장, pte update
     char pg_pfn = get_pfn();
     if (pg_pfn == -1)
-    {
         return -1;
-    }
+
     ku_mmu_pmem[pt_pfn*PAGE_SIZE] = (pg_pfn << 2) + 1;
 
     // PCB 업뎃 (0번 : pid, 1번 : pd의 pfn)
-    ku_mmu_pmem[pg_pfn*PAGE_SIZE] = pid;
-    ku_mmu_pmem[pg_pfn*PAGE_SIZE + 1] = pd_pfn;
+    PCB *pcb=ku_mmu_pmem+pg_pfn*PAGE_SIZE;
+    pcb->pid=pid;
+    pcb->pd_pfn=pd_pfn;
+    ku_mmu_pcb_pfns[ku_mmu_pcount]=pg_pfn;
 
     // 생성된 process 개수
     ku_mmu_pcount++;
@@ -226,37 +209,28 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
         // pid와 pdbr 저장하는 배열의 크기 재할당
         ku_mmu_psize *= 2;
         // 안전하게 재할당하기 위하여 값 확인 필요
-        char *temp_pids = realloc(ku_mmu_pids, sizeof(char) * ku_mmu_psize);
-        char **temp_pdbrs = realloc(ku_mmu_pdbrs, sizeof(char* ) * ku_mmu_psize);
-        if (temp_pids == NULL || temp_pdbrs == NULL)
-        {
+        char *temp_pcb_pfns = realloc(ku_mmu_pcb_pfns, sizeof(char) * ku_mmu_psize);
+        if (temp_pcb_pfns == NULL)
             return -1;
-        }
-        ku_mmu_pids = temp_pids;
-        ku_mmu_pdbrs = temp_pdbrs;
+        ku_mmu_pcb_pfns = temp_pcb_pfns;
     }
-
     return 0;
 }
 
 int ku_page_fault(char pid, char va)
 {
-    // pdbr 찾기 위해 몇번에 저장되어 있는 pid인지 search
-    int index = -1;
+    char *pdbr;
+    // pdbr 찾기
     for (int i = 0; i < ku_mmu_pcount; i++)
     {
-        if (ku_mmu_pids[i] == pid)
+        PCB *cur_pcb=ku_mmu_pmem+ku_mmu_pcb_pfns[i]*PAGE_SIZE;
+        if (pid == cur_pcb->pid)
         {
-            index = i;
+            // 이미 실행됐던 프로세스
+            pdbr = ku_mmu_pmem+cur_pcb->pd_pfn*PAGE_SIZE;
             break;
         }
     }
-    if (index == -1)
-    {
-        return -1;
-    }
-    // process의 pdbr
-    char* pdbr = ku_mmu_pdbrs[index];
     // 각각 pd, pmd, pt offset
     char pd_offset = (unsigned char)(va & 0xC0) >> 6;
     char pmd_offset = (va & 0x30) >> 4;
