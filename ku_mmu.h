@@ -13,15 +13,8 @@ char *ku_mmu_pids;
 char **ku_mmu_pdbrs;
 
 // PFN, Swap Space Offset Mask
-static char PFN_MASK=0xFC;
-static char SWAP_MASK=0xFE;
-
-// pmem/swap space의 free list, 프로세스가 항상 같은 크기의 페이지만 요구하므로
-// 빈 공간의 연속된 크기 정보는 알 필요가 없다.
-// free list를 메모리만큼 배열을 만들고 0과 1을 통해 비어있는 곳을 표시할까 고민했으나,
-// 빈 공간을 찾을 때마다 최악의 경우 매번 N번 시간이 들기 때문에,
-// 배열에 빈 공간들의 인덱스(PFN, 혹은 swap space offset)를 모두 넣어 놓고
-// 제외하는 방식으로 구현하였다.
+const char PFN_MASK=0xFC;
+const char SWAP_MASK=0xFE;
 
 typedef struct ku_mmu_queue
 {
@@ -49,28 +42,19 @@ int ku_mmu_pop(ku_mmu_queue *q)
         q->front = 0;
     return r;
 }
-
 char ku_mmu_push(ku_mmu_queue *q, int num)
 {
     if (q->size == q->count)
         return -1;
     q->base[q->back] = num;
-    //printf("[base:%p, back:%d] %p: %d added\n",q->base, q->back, &(q->base[q->back]),q->base[q->back]);
     q->back = q->back + 1;
     q->count = q->count + 1;
     if (q->back == q->size)
         q->back = 0;
-    //printf("count:%d\n",q->count);
     return 0;
 }
 void ku_mmu_print(char *qname, ku_mmu_queue *q)
 {
-    // int front; // queue의 시작 인덱스
-    // int back;  // queue의 값이 들어갈 인덱스
-    // int size;  // queue의 크기
-    // int count; // 들어가있는 원소 개수
-    // int *base; // 저장 공간 배열 주소
-
     printf("\n======= %s =======\n", qname);
     printf("\tfront:%d\n", q->front);
     printf("\t back:%d\n", q->back);
@@ -110,8 +94,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
         // Swap space offset이 7bits이므로 그 이상 사용 불가
         swap_size = 512;
     }
-    // pfn 0번, 각 프로세스별 va 0번, swap space의 0번은 쓰이지 않음
-    // 페이지 크기가 4바이트이므로, 4로 나눈 나머지는 쓸 수 없다.
+    
     printf("ku_os: Your physical memory size is %ubytes.\n", pmem_size);
     printf("ku_os: Your swap space size is %ubytes.\n", swap_size);
 
@@ -120,9 +103,10 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     // 1바이트 만큼씩 할당하고 모두 0으로 초기화
     ku_mmu_pmem = calloc(pmem_size, 1);
     ku_mmu_swap = calloc(swap_size, 1);
-    printf("memory base address: %p, swap base address: %p\n",ku_mmu_pmem,ku_mmu_swap);
+    //printf("memory base address: %p, swap base address: %p\n",ku_mmu_pmem,ku_mmu_swap);
 
     // 사실상 쓸 수 있는 공간
+    // 페이지 크기가 4바이트이므로, 4로 나눈 나머지는 쓸 수 없다.
     pmem_size=pmem_size-(pmem_size%4);
     swap_size=swap_size-(swap_size%4);
 
@@ -140,8 +124,8 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     ku_mmu_sfree.size = swap_size/ 4;
     ku_mmu_pfree.base = malloc(ku_mmu_pfree.size);
     ku_mmu_sfree.base = malloc(ku_mmu_sfree.size);
-    printf("memory free base address: %p[%d], swap free base address: %p[%d]\n",
-        ku_mmu_pfree.base,ku_mmu_pfree.size,ku_mmu_sfree.base,ku_mmu_sfree.size);
+    //printf("memory free base address: %p[%d], swap free base address: %p[%d]\n",
+    //    ku_mmu_pfree.base,ku_mmu_pfree.size,ku_mmu_sfree.base,ku_mmu_sfree.size);
     // Update free list
     for (int i = 0; i < pmem_size / 4; i++)
     {
@@ -153,9 +137,9 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
             return NULL;
         }
     }
-    // ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
-    // printf("\n");
-    for (int i = 0; i < swap_size / 4; i++)
+
+    // swap space의 0번 페이지는 쓰이지 않음
+    for (int i = 1; i < swap_size / 4; i++)
     {
         int r = ku_mmu_push(&ku_mmu_sfree, i);
         if (r == -1)
@@ -166,8 +150,8 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     }
 
     //free list 값 확인
-    ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
-    ku_mmu_print("swap space free list ", &ku_mmu_sfree);
+    // ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
+    // ku_mmu_print("swap space free list ", &ku_mmu_sfree);
 
     return ku_mmu_pmem;
 }
@@ -190,9 +174,9 @@ char ku_mmu_get_page_pfn()
             return -1;
         }
         // swap 가능 -> Page replacement policy: FIFO
-        ku_mmu_print("pte orders 전", &ku_mmu_pte_orders);
+        //ku_mmu_print("pte orders 전", &ku_mmu_pte_orders);
         char pte_offset = ku_mmu_pop(&ku_mmu_pte_orders);
-        ku_mmu_print("pte orders 후", &ku_mmu_pte_orders);
+        //ku_mmu_print("pte orders 후", &ku_mmu_pte_orders);
         char swap_offset = ku_mmu_pop(&ku_mmu_sfree);
         if (pte_offset == -1 || swap_offset == -1)
         {
@@ -206,17 +190,18 @@ char ku_mmu_get_page_pfn()
         /************************
         page내용 swap space에 저장
         ************************/
+
         // swap space에 임의값 저장 (확인 위함)
         *(ku_mmu_swap+swap_offset*PAGE_SIZE)=1;
         // PT에 Swap entry 저장
         *(ku_mmu_pmem + pte_offset) = (swap_offset << 1);
-        printf("ku_os: Allocate new page [pfn:%#x]\n", pfn);
+        //printf("ku_os: Allocate new page [pfn:%#x]\n", pfn);
         return pfn;
     }
     else
     {
         char pfn = ku_mmu_pop(&ku_mmu_pfree);
-        printf("ku_os: Allocate new page [pfn:%#x]\n", pfn);
+        //printf("ku_os: Allocate new page [pfn:%#x]\n", pfn);
         if (pfn == -1)
         {
             printf("ku_os: Queue error\n");
@@ -227,7 +212,7 @@ char ku_mmu_get_page_pfn()
     return -1;
 }
 
-int ku_run_proc(char pid, void **ku_cr3)
+int ku_run_proc(char pid, struct ku_pte **ku_cr3)
 {
     // pid 생성 여부 확인
     for (int i = 0; i < ku_mmu_pcount; i++)
@@ -285,13 +270,13 @@ int ku_run_proc(char pid, void **ku_cr3)
     ku_mmu_pmem[pt_pfn*PAGE_SIZE] = (pg_pfn << 2) + 1;
     printf("\nku_os: New Process (pid:%hhd)\n", pid);
     printf("ku_os: va[0] occupied by OS\n");
-    printf("pid:%d / pdbr[%p] pd:%#x -> pmd:%#x -> pt:%#x -> page:%#x\n",
-        pid, ku_mmu_pdbrs[ku_mmu_pcount], pd_pfn, pmd_pfn, pt_pfn, pg_pfn);
+    //printf("pid:%d / pdbr[%p] pd:%#x -> pmd:%#x -> pt:%#x -> page:%#x\n",
+    //    pid, ku_mmu_pdbrs[ku_mmu_pcount], pd_pfn, pmd_pfn, pt_pfn, pg_pfn);
     // PCB 업뎃 (0번 : pid, 1번 : pd의 pfn)
     ku_mmu_pmem[pg_pfn*PAGE_SIZE] = pid;
     ku_mmu_pmem[pg_pfn*PAGE_SIZE + 1] = pd_pfn;
-    printf("PCB[ pid:%hhd, Page Directory PFN:%#x ]\n\n", ku_mmu_pmem[pg_pfn], ku_mmu_pmem[pg_pfn + 1]);
-    ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
+    printf("PCB[ pid:%hhd, Page Directory PFN:%#x ]\n", ku_mmu_pmem[pg_pfn], ku_mmu_pmem[pg_pfn + 1]);
+    //ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
     // 생성된 process 개수
     ku_mmu_pcount++;
     if (ku_mmu_pcount == ku_mmu_psize)
@@ -342,7 +327,7 @@ int ku_page_fault(char pid, char va)
         pid, pdbr, pd_offset, pmd_offset, pt_offset);
 
     char pde = *(pdbr + pd_offset);
-    printf("pde: %#x -> ", (unsigned char)pde);
+    //printf("pde: %#x -> ", (unsigned char)pde);
     // pmd는 swap out 안되므로, swap out은 안 되어있음
     if (pde == 0)
     { // page middle directory 새로 할당
@@ -350,14 +335,14 @@ int ku_page_fault(char pid, char va)
         if (pmd_pfn == -1)
             return -1;
         pde = (pmd_pfn << 2) + 1;
-        printf("new pde: %#x -> ", (unsigned char)pde);
+        //printf("new pde: %#x -> ", (unsigned char)pde);
         *(pdbr+pd_offset)=pde;
     }
 
     char pmd_pfn = (unsigned char)(pde&PFN_MASK) >> 2;
-    printf("pmd: %#x -> ", pmd_pfn);
+    //printf("pmd: %#x -> ", pmd_pfn);
     char pmde = *(ku_mmu_pmem + pmd_pfn*PAGE_SIZE + pmd_offset);
-    printf("pmde: %#x -> ", pmde);
+    //printf("pmde: %#x -> ", pmde);
     // pt는 swap out 안되므로, swap out은 안 되어있음
     if (pmde == 0)
     { //page table 새로 할당
@@ -365,13 +350,13 @@ int ku_page_fault(char pid, char va)
         if (pt_pfn == -1)
             return -1;
         pmde = (pt_pfn << 2) + 1;
-        printf("new pmde: %#x -> ", (unsigned char)pmde);
+        //printf("new pmde: %#x -> ", (unsigned char)pmde);
         *(ku_mmu_pmem + pmd_pfn*PAGE_SIZE + pmd_offset)=pmde;
     }
     char pt_pfn = (unsigned char)(pmde&PFN_MASK) >> 2;
-    printf("pt: %#x -> ", pt_pfn);
+    //printf("pt: %#x -> ", pt_pfn);
     char pte = *(ku_mmu_pmem + pt_pfn*PAGE_SIZE + pt_offset);
-    printf("pte: %#x -> ", (unsigned char)pte);
+    //printf("pte: %#x -> ", (unsigned char)pte);
     // page는 swap out 가능
     // present 상태는 아님(page fault가 났으므로)
     // swap out인지 demand paging이 필요한지
@@ -385,7 +370,7 @@ int ku_page_fault(char pid, char va)
         }
         // swap in 필요
         char swap_offset = (unsigned char)(pte & SWAP_MASK) >> 1;
-        printf("(ku_os: Swap in from #%#x) -> ", swap_offset);
+        printf("ku_os: Swap in from #%#x\n", swap_offset);
         /***********************
         ...page 내용 가져오기...
         ************************/
@@ -393,32 +378,29 @@ int ku_page_fault(char pid, char va)
         *(ku_mmu_swap+swap_offset*PAGE_SIZE)=0;
     }
 
-    // printf("\ncheck!>>>>>>>>>>>>>>>>>>>>>>>>>\n");
-    // ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
 
     // 새로운 페이지 할당
     char pg_pfn = ku_mmu_get_page_pfn();
     if (pg_pfn == -1)
         return -1;
 
-    // printf("\ncheck!>>>>>>>>>>>>>>>>>>>>>>>>>\n");
-    // ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
 
     // pte 업뎃
     *(ku_mmu_pmem + pt_pfn*PAGE_SIZE + pt_offset) = (pg_pfn << 2) + 1;
-    printf("new pte: %#x -> ", (unsigned char)(*(ku_mmu_pmem + pt_pfn*PAGE_SIZE + pt_offset)));
-    printf("page: %#x / Fault handler is succeeded\n\n", pg_pfn);
+    //printf("new pte: %#x -> ", (unsigned char)(*(ku_mmu_pmem + pt_pfn*PAGE_SIZE + pt_offset)));
+    //printf("page: %#x / Fault handler is succeeded\n\n", pg_pfn);
 
 
     // For page replacement
     ku_mmu_push(&ku_mmu_pte_orders, pt_pfn*PAGE_SIZE + pt_offset);
-    ku_mmu_print("pte orders pushed", &ku_mmu_pte_orders);
+    //ku_mmu_print("pte orders pushed", &ku_mmu_pte_orders);
 
     //free list 값 확인
-    ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
-    ku_mmu_print("swap space free list ", &ku_mmu_sfree);
+    // ku_mmu_print("physical memory free list ", &ku_mmu_pfree);
+    // ku_mmu_print("swap space free list ", &ku_mmu_sfree);
 
-    ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
+    // ku_mmu_test(ku_mmu_pmem,ku_mmu_pmem_size);
+    // ku_mmu_test(ku_mmu_swap,ku_mmu_swap_size);
 
     return 0;
 }
