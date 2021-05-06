@@ -16,22 +16,22 @@ char **ku_mmu_pdbrs;
 const char PFN_MASK=0xFC;
 const char SWAP_MASK=0xFE;
 
-typedef struct ku_mmu_queue
+typedef struct queue
 {
     int front; // queue의 시작 인덱스
     int back;  // queue의 값이 들어갈 인덱스
     int size;  // queue의 크기
     int count; // 들어가있는 원소 개수
     char *base; // 저장 공간 배열 주소
-} ku_mmu_queue;
+} queue;
 
 // Free list
-ku_mmu_queue ku_mmu_pfree = {0, 0, 0, 0, NULL};
-ku_mmu_queue ku_mmu_sfree = {0, 0, 0, 0, NULL};
+queue ku_mmu_pfree = {0, 0, 0, 0, NULL};
+queue ku_mmu_sfree = {0, 0, 0, 0, NULL};
 // For page replacement(FIFO), store page order
-ku_mmu_queue ku_mmu_pte_orders = {0, 0, 0, 0, NULL};
+queue ku_mmu_pte_orders = {0, 0, 0, 0, NULL};
 
-int ku_mmu_pop(ku_mmu_queue *q)
+int pop(queue *q)
 {
     if (q->count == 0)
         return -1;
@@ -42,7 +42,7 @@ int ku_mmu_pop(ku_mmu_queue *q)
         q->front = 0;
     return r;
 }
-char ku_mmu_push(ku_mmu_queue *q, int num)
+char push(queue *q, int num)
 {
     if (q->size == q->count)
         return -1;
@@ -97,7 +97,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     // Update free list
     for (int i = 0; i < pmem_size / 4; i++)
     {
-        int r = ku_mmu_push(&ku_mmu_pfree, i);
+        int r = push(&ku_mmu_pfree, i);
         if (r == -1)
         {
             return NULL;
@@ -107,7 +107,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     // swap space의 0번 페이지는 쓰이지 않음
     for (int i = 1; i < swap_size / 4; i++)
     {
-        int r = ku_mmu_push(&ku_mmu_sfree, i);
+        int r = push(&ku_mmu_sfree, i);
         if (r == -1)
         {
             return NULL;
@@ -116,7 +116,7 @@ void *ku_mmu_init(unsigned int pmem_size, unsigned int swap_size)
     return ku_mmu_pmem;
 }
 
-char ku_mmu_get_page_pfn()
+char get_pfn()
 {
     if (ku_mmu_pfree.count == 0)
     {
@@ -132,8 +132,8 @@ char ku_mmu_get_page_pfn()
             return -1;
         }
         // swap 가능 -> Page replacement policy: FIFO
-        char pte_offset = ku_mmu_pop(&ku_mmu_pte_orders);
-        char swap_offset = ku_mmu_pop(&ku_mmu_sfree);
+        char pte_offset = pop(&ku_mmu_pte_orders);
+        char swap_offset = pop(&ku_mmu_sfree);
         if (pte_offset == -1 || swap_offset == -1)
         {
             return -1;
@@ -153,7 +153,7 @@ char ku_mmu_get_page_pfn()
     }
     else
     {
-        char pfn = ku_mmu_pop(&ku_mmu_pfree);
+        char pfn = pop(&ku_mmu_pfree);
         if (pfn == -1)
         {
             return -1;
@@ -178,7 +178,7 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
 
     // 새로 프로세스 생성
     // va 0번에 PCB 저장하기 위해 PD, PDM, PT 0번 각각 생성후 페이지에 PCB 정보를 저장한다.
-    // PCB는 각각 char pid, state(run or wait), pdbr의 PFN 정보를 갖고 있다.
+    // PCB는 각각 char pid, pd의 PFN 정보를 갖고 있다.
     // 따라서 기본적으로 페이지 4개를 할당받아야함
 
     // 새로운 process 생성, pid와 pdbr 배열에 넣어줌
@@ -186,7 +186,7 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
     ku_mmu_pids[ku_mmu_pcount] = pid;
 
     // page directory 생성
-    char pd_pfn = ku_mmu_get_page_pfn();
+    char pd_pfn = get_pfn();
     if (pd_pfn == -1)
     {
         return -1;
@@ -194,21 +194,21 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
     ku_mmu_pdbrs[ku_mmu_pcount] =ku_mmu_pmem+pd_pfn*PAGE_SIZE;
     *ku_cr3 = ku_mmu_pdbrs[ku_mmu_pcount];
     // 0번에 page middle directory 생성, pde update
-    char pmd_pfn = ku_mmu_get_page_pfn();
+    char pmd_pfn = get_pfn();
     if (pmd_pfn == -1)
     {
         return -1;
     }
     ku_mmu_pmem[pd_pfn*PAGE_SIZE] = (pmd_pfn << 2) + 1;
     // 0번에 page table 생성, pmde update
-    char pt_pfn = ku_mmu_get_page_pfn();
+    char pt_pfn = get_pfn();
     if (pt_pfn == -1)
     {
         return -1;
     }
     ku_mmu_pmem[pmd_pfn*PAGE_SIZE] = (pt_pfn << 2) + 1;
     // 0번에 page -> PCB 저장, pte update
-    char pg_pfn = ku_mmu_get_page_pfn();
+    char pg_pfn = get_pfn();
     if (pg_pfn == -1)
     {
         return -1;
@@ -241,7 +241,6 @@ int ku_run_proc(char pid, struct ku_pte **ku_cr3)
 
 int ku_page_fault(char pid, char va)
 {
-
     // pdbr 찾기 위해 몇번에 저장되어 있는 pid인지 search
     int index = -1;
     for (int i = 0; i < ku_mmu_pcount; i++)
@@ -268,7 +267,7 @@ int ku_page_fault(char pid, char va)
     // pmd는 swap out 안되므로, swap out은 안 되어있음
     if (pde == 0)
     { // page middle directory 새로 할당
-        char pmd_pfn = ku_mmu_get_page_pfn();
+        char pmd_pfn = get_pfn();
         if (pmd_pfn == -1)
             return -1;
         pde = (pmd_pfn << 2) + 1;
@@ -281,7 +280,7 @@ int ku_page_fault(char pid, char va)
     // pt는 swap out 안되므로, swap out은 안 되어있음
     if (pmde == 0)
     { //page table 새로 할당
-        char pt_pfn = ku_mmu_get_page_pfn();
+        char pt_pfn = get_pfn();
         if (pt_pfn == -1)
             return -1;
         pmde = (pt_pfn << 2) + 1;
@@ -312,14 +311,14 @@ int ku_page_fault(char pid, char va)
     }
 
     // 새로운 페이지 할당
-    char pg_pfn = ku_mmu_get_page_pfn();
+    char pg_pfn = get_pfn();
     if (pg_pfn == -1)
         return -1;
     // pte 업뎃
     *(ku_mmu_pmem + pt_pfn*PAGE_SIZE + pt_offset) = (pg_pfn << 2) + 1;
 
     // For page replacement
-    ku_mmu_push(&ku_mmu_pte_orders, pt_pfn*PAGE_SIZE + pt_offset);
+    push(&ku_mmu_pte_orders, pt_pfn*PAGE_SIZE + pt_offset);
 
     return 0;
 }
