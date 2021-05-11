@@ -1,5 +1,5 @@
 # 2021 Operating System
-## Assignment #1:KU_MMU
+## Assignment #1 : KU_MMU
 - Support address translation for CPU
 - Input 파일의 형식은 (pid) (virtual address)
 - 각 프로세스별로 적절한 page directory를 할당 후 관리가 필요
